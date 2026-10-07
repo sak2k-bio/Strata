@@ -2,24 +2,29 @@
 
 Tested optimal config for this exact hardware (verified 2026-10-04). Model: **Coder IQ1_M** — the only size 32 GB RAM fits, and the fastest-reading one (91% of full model on SWE-bench).
 
+TO RUN THE SERVER:
+cd /d "F:\STRATA\Strata"
+
+"F:\STRATA\Strata\.venv\Scripts\python.exe" "F:\STRATA\Strata\serve\server.py" "--engine" "strata" "--config" "F:\STRATA\Strata\strata-coder-iq1_m.json" "--host" "0.0.0.0" "--port" "4444" "--api-key" "xyz"
+
 ## Settings that matter (already applied)
 
-| Setting | Value | Why |
-|---|---|---|
-| model | Coder IQ1_M (58 GB download) | only fit at 32 GB RAM; fastest size |
-| `--max-context` | `71680` (70K) | large window; prefill past ~16K is slow |
-| `--kv` | `q4_0` | KV compression: halves KV VRAM (213→542 MiB free), **+44% decode speed** vs int8 |
-| `--vram-reserve-mib` | `999` | **required**: leaves ~1 GB VRAM for prompt prefill; without it 30K-token prompts stall and the engine kills itself (issue #29) |
-| `--prefill` | `4096` | smaller prompt chunks = less VRAM per chunk; pairs with the reserve |
-| `--pcie-frac` | `0.35` | **calibrated on this PC** (setup `--calibrate`): share of missing experts copied over PCIe vs read from SSD |
-| `--spec-min-p` | `0.70` | **calibrated**: how sure the draft layer must be to extend a verify window |
-| `draft_vocab` | `en` | English/code draft head: 81 MiB VRAM vs 213 MiB for the cjk default — frees ~130 MiB for the expert cache |
-| `reasoning_budget_tokens` | `512` | caps thinking per request; server closes the thinking block at the budget so replies always answer (uncapped default burned the whole `max_tokens` on this slow card — "no answer" replies) |
-| `--prompt-cache-every` | `4096` | checkpoint growing prompts every 4K tokens instead of 16K — agent clients (Claude Code) resend the whole conversation each turn, so this is what makes multi-turn work fast |
-| `fit_max_tokens` | `true` | server clamps `max_tokens` to the context room instead of returning 400 — agent clients that overshoot get a shorter answer, not an error |
-| `--resident-experts` | on | experts the GPU can't hold live in RAM, copied once at start |
-| `--host` / `--port` | `0.0.0.0` / `4444` | reachable from tailnet/LAN |
-| `--api-key` | see run bat | required — `/v1/*` returns 401 without it |
+| Setting                   | Value                        | Why                                                                                                                                                                                         |
+| ------------------------- | ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| model                     | Coder IQ1_M (58 GB download) | only fit at 32 GB RAM; fastest size                                                                                                                                                         |
+| `--max-context`           | `71680` (70K)                | large window; prefill past ~16K is slow                                                                                                                                                     |
+| `--kv`                    | `q4_0`                       | KV compression: halves KV VRAM (213→542 MiB free), **+44% decode speed** vs int8                                                                                                            |
+| `--vram-reserve-mib`      | `999`                        | **required**: leaves ~1 GB VRAM for prompt prefill; without it 30K-token prompts stall and the engine kills itself (issue #29)                                                              |
+| `--prefill`               | `4096`                       | smaller prompt chunks = less VRAM per chunk; pairs with the reserve                                                                                                                         |
+| `--pcie-frac`             | `0.35`                       | **calibrated on this PC** (setup `--calibrate`): share of missing experts copied over PCIe vs read from SSD                                                                                 |
+| `--spec-min-p`            | `0.70`                       | **calibrated**: how sure the draft layer must be to extend a verify window                                                                                                                  |
+| `draft_vocab`             | `en`                         | English/code draft head: 81 MiB VRAM vs 213 MiB for the cjk default — frees ~130 MiB for the expert cache                                                                                   |
+| `reasoning_budget_tokens` | `512`                        | caps thinking per request; server closes the thinking block at the budget so replies always answer (uncapped default burned the whole `max_tokens` on this slow card — "no answer" replies) |
+| `--prompt-cache-every`    | `4096`                       | checkpoint growing prompts every 4K tokens instead of 16K — agent clients (Claude Code) resend the whole conversation each turn, so this is what makes multi-turn work fast                 |
+| `fit_max_tokens`          | `true`                       | server clamps `max_tokens` to the context room instead of returning 400 — agent clients that overshoot get a shorter answer, not an error                                                   |
+| `--resident-experts`      | on                           | experts the GPU can't hold live in RAM, copied once at start                                                                                                                                |
+| `--host` / `--port`       | `0.0.0.0` / `4444`           | reachable from tailnet/LAN                                                                                                                                                                  |
+| `--api-key`               | see run bat                  | required — `/v1/*` returns 401 without it                                                                                                                                                   |
 
 ## Start the server
 
@@ -40,12 +45,12 @@ Tested optimal config for this exact hardware (verified 2026-10-04). Model: **Co
 
 ## Expected speed (measured, warm)
 
-| Workload | Speed |
-|---|---|
-| Short replies | ~2.9 tok/s |
-| Long replies (600 tok) | ~4.8 tok/s |
-| Large prompt prefill (20-32K tokens) | ~200 tok/s cold, ~1000 tok/s warm |
-| Tiny prompt prefill (cold, overhead-dominated) | 2–6 tok/s |
+| Workload                                       | Speed                             |
+| ---------------------------------------------- | --------------------------------- |
+| Short replies                                  | ~2.9 tok/s                        |
+| Long replies (600 tok)                         | ~4.8 tok/s                        |
+| Large prompt prefill (20-32K tokens)           | ~200 tok/s cold, ~1000 tok/s warm |
+| Tiny prompt prefill (cold, overhead-dominated) | 2–6 tok/s                         |
 
 First requests after a start are slow while the resident expert pool pages in from disk (~1-2 min); everything after that is warm.
 
@@ -87,6 +92,7 @@ START-HERE.bat --yes --family coder --model IQ1_M --no-start
 Needs ~80 GB free on one drive, an NVIDIA GPU (RTX 30-series driver or newer), 32 GB RAM. No Hugging Face token needed (model repos are public).
 
 After setup finishes, apply these edits to `strata-coder-iq1_m.json`:
+
 - `--max-context` → `71680`
 - `--kv` → `q4_0`
 - `--vram-reserve-mib` → `999` and `--prefill` → `4096` (large-prompt stability, see above)
