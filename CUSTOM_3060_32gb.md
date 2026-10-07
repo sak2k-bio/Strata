@@ -12,10 +12,10 @@ cd /d "F:\STRATA\Strata"
 | Setting                   | Value                        | Why                                                                                                                                                                                         |
 | ------------------------- | ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | model                     | Coder IQ1_M (58 GB download) | only fit at 32 GB RAM; fastest size                                                                                                                                                         |
-| `--max-context`           | `71680` (70K)                | large window; prefill past ~16K is slow                                                                                                                                                     |
+| `--max-context` | `112640` (110K) | big window; prefill past ~16K is slow. Raised from 71680 on 2026-10-06 (+~270 MiB VRAM for q4_0 KV at this model's ~13 attention layers; the auto expert cache absorbs it as ~130 fewer slots) |
 | `--kv`                    | `q4_0`                       | KV compression: halves KV VRAM (213→542 MiB free), **+44% decode speed** vs int8                                                                                                            |
 | `--vram-reserve-mib`      | `999`                        | **required**: leaves ~1 GB VRAM for prompt prefill; without it 30K-token prompts stall and the engine kills itself (issue #29)                                                              |
-| `--prefill`               | `4096`                       | smaller prompt chunks = less VRAM per chunk; pairs with the reserve                                                                                                                         |
+| `--prefill` | `auto` | 0.1.39: the engine picks the largest chunk (≤8192) whose buffers the expert cache can lend. Engine source measured on a 12 GB card, 32K prompt: 791→973 tok/s at 8192 vs 4096. Was `4096` on 0.1.38; `--vram-reserve-mib 999` stays either way |
 | `--pcie-frac`             | `0.35`                       | **calibrated on this PC** (setup `--calibrate`): share of missing experts copied over PCIe vs read from SSD                                                                                 |
 | `--spec-min-p`            | `0.70`                       | **calibrated**: how sure the draft layer must be to extend a verify window                                                                                                                  |
 | `draft_vocab`             | `en`                         | English/code draft head: 81 MiB VRAM vs 213 MiB for the cjk default — frees ~130 MiB for the expert cache                                                                                   |
@@ -79,7 +79,7 @@ To move once space exists: stop the server, `robocopy E:\Code projects\STRATA\St
 
 ## Large prompts (30K+ tokens)
 
-Without `--vram-reserve-mib 999` the prefill path runs out of scratch VRAM on prompts past ~16K tokens, stalls at "layer 0 of the prompt chunk", and the engine's 60 s watchdog kills itself (issue #29) — the server then restarts it (~8 min) and the client's retry loops forever. The reserve + `--prefill 4096` fix it: a 32K-token prompt now prefills in ~30 s. If you change `--max-context` or `--kv`, keep the reserve.
+Without `--vram-reserve-mib 999` the prefill path runs out of scratch VRAM on prompts past ~16K tokens, stalls at "layer 0 of the prompt chunk", and the engine's 60 s watchdog kills itself (issue #29) — the server then restarts it (~8 min) and the client's retry loops forever. The reserve fixes it (a 32K-token prompt now prefills in ~30 s); with `--prefill auto`, 0.1.39 picks the chunk size within that reserve. If you change `--max-context` or `--kv`, keep the reserve.
 
 ## Fresh install from scratch
 
@@ -93,9 +93,9 @@ Needs ~80 GB free on one drive, an NVIDIA GPU (RTX 30-series driver or newer), 3
 
 After setup finishes, apply these edits to `strata-coder-iq1_m.json`:
 
-- `--max-context` → `71680`
+- `--max-context` → `112640`
 - `--kv` → `q4_0`
-- `--vram-reserve-mib` → `999` and `--prefill` → `4096` (large-prompt stability, see above)
+- `--vram-reserve-mib` → `999` and `--prefill` → `auto` (large-prompt stability, see above)
 - top-level `"draft_vocab": "en"` and `"reasoning_budget_tokens": 512`
 - top-level `"env": {"STRATA_WATCHDOG_S": "0"}` (no auto-shutdown; see trade-off above)
 
