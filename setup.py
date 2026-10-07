@@ -4079,9 +4079,14 @@ def main() -> int:
     # the .part files already on the disk count
     on_disk = sum(f.stat().st_size for s in shards for f in (s, s.with_name(s.name + ".part")) if f.is_file()) / 1e9
     to_fetch = 0 if a.gguf_dir or have_model else max(MODELS[model]["download_gb"] - on_disk, 0)
+    # the low-RAM experts file counts as on the disk when it is already built (step 6 skips it then): a resumed
+    # install must not reserve its space a second time (#425's reasoning, extended to the pack)
+    arena_dir = find_in(roots, f"packs/{tag.lower()}") or data / "packs" / tag.lower()
+    arena_done = (arena_dir / "experts.bin").exists()
     need = to_fetch + 8 + \
         (40 if model == "Q2_0" and avx512 and family == "qwen" else 0) + (1 if vision != "none" else 0) + \
-        (MODELS[model]["arena_gb"] + 1 if low_ram and not (model == "Q2_0" and avx512 and family == "qwen") else 0)
+        (MODELS[model]["arena_gb"] + 1 if low_ram and not arena_done and
+         not (model == "Q2_0" and avx512 and family == "qwen") else 0)
     if free_gb(models_dir) < need:
         fail(f"not enough free disk space in {models_dir}: need ~{need:.0f} GB" +
              (f" ({on_disk:.0f} GB of the model is already there)" if on_disk >= 1 and not have_model else ""),
