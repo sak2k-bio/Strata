@@ -1,106 +1,28 @@
 # QUICK_UPDATE.md — safely update Strata (RTX 3060 / 32 GB install)
 
-<<<<<<< Updated upstream
-<<<<<<< Updated upstream
-Verified 2026-10-05: v0.1.38 → v0.1.39, server + engine together, custom config untouched.
-This install carries hand-tuned pieces: `strata-coder-iq1_m.json` + `run-coder-iq1_m.bat` (both
-gitignored — git never touches them), calibrated `--pcie-frac 0.35` / `--spec-min-p 0.70`,
-F:\STRATA paths, port 4444, and a local `setup.py` disk-check patch.
-=======
 Verified 2026-10-12: v0.1.40.1 → v0.1.43, server + engine together, custom config untouched
 (branch `update-0.1.43`; previous procedure verified 2026-10-05, v0.1.38 → v0.1.39).
 This install carries hand-tuned pieces: `strata-coder-iq1_m.json` + `run-coder-iq1_m.bat` (both
 gitignored — git never touches them), calibrated `--pcie-frac 0.35` / `--spec-min-p 0.70`,
 F:\STRATA paths, and port 4444.
->>>>>>> Stashed changes
-
-## Do NOT use UPDATE.bat / START-HERE.bat --update here
-
-They re-run setup, which rewrites run-config args. The manual steps below take ~5 minutes and
-leave every hand-tuned value intact.
-
-## Update procedure (server code + engine — always together)
-
-1. **Stop the server** (close the run bat; port 4444 must be free).
-<<<<<<< Updated upstream
-2. **Stash local changes**: `git -C Strata status` — stash every modified file,
-   e.g. `git -C Strata stash push -m "local patches" -- setup.py`.
-3. **Pull**: `git -C Strata pull --ff-only`. Fails if anything is dirty — stash first, never force.
-4. **Restore**: `git -C Strata stash pop` (should auto-merge; resolve by hand if not).
-=======
-2. **Back up the untracked docs** — this is the step that is easy to miss:
-   `CUSTOM_3060_32gb.md` and `QUICK_UPDATE.md` are **not tracked by git**, so any branch
-   switch or `git checkout` deletes them from disk. Copy both to `F:\STRATA\repo-docs-backup-<date>\`
-   first, then restore them after the switch.
-3. **Branch off upstream** (a plain `pull --ff-only` fails here — this clone's history was
-   rewritten upstream and no longer shares commits):
-   `git -C Strata fetch upstream && git -C Strata checkout -b update-<ver> upstream/main`.
-   Keep the previous update branch as the rollback point.
-4. **Restore the docs** into `Strata\` from the backup in step 2.
->>>>>>> Stashed changes
-5. **Engine** (not in git — a prebuilt download):
-   - Release notes pick the zip: `strata-windows-x64.zip` (CUDA 13, driver 580+) or
-     `...-cuda12.zip` (driver 528+). This PC: driver 616 → cuda13.
-   - `curl -L -o %TEMP%\strata-engine.zip https://github.com/Niko1221/Strata/releases/download/v<VER>/strata-windows-x64.zip`
-   - Verify: `certutil -hashfile %TEMP%\strata-engine.zip SHA256` must equal the release asset digest.
-   - Backup: copy `strata.exe`, `strata-vision.exe`, `BUILD.json` → `Strata\engine-backup-<oldver>\`.
-   - Install: PowerShell `Expand-Archive -Path $env:TEMP\strata-engine.zip -DestinationPath Strata\engine -Force`.
-6. **Python deps**: `git diff <oldsha>..<newsha> -- requirements.txt` — if changed:
-<<<<<<< Updated upstream
-   `.venv\Scripts\python.exe -m pip install -r requirements.txt`. (0.1.39: unchanged.)
-7. **Config args**: check the release notes / new `src/program/generate.cpp` for removed flags.
-   All of ours survived 0.1.39.
-=======
-   `.venv\Scripts\python.exe -m pip install -r requirements.txt`. (0.1.43: unchanged.)
-7. **Config args**: check the release notes / new `src/program/generate.cpp` for removed flags.
-   All of ours survived 0.1.43.
->>>>>>> Stashed changes
-8. **Start** `run-coder-iq1_m.bat` and verify:
-   - `curl http://127.0.0.1:4444/health` → `"loaded":true`
-   - `GET /v1/status` (with API key) → `"engine":"<new version>"`
-   - One chat request; then `strata-coder-iq1_m.log` tail looks like a normal start.
-
-## Rollback
-
-- Engine: copy `engine-backup-<ver>\*` back over `engine\`.
-<<<<<<< Updated upstream
-- Code: `git -C Strata reset --hard <old sha>`; local patches re-apply from the stash entry.
-=======
-- Code: `git -C Strata checkout <previous update branch>` (each update leaves one behind as
-  the rollback point), then restore that version's engine from its `engine-backup-<ver>\`.
->>>>>>> Stashed changes
-- Config/bat: not in git — keep your own backup copy if you edit them.
-
-## Notes
-
-- Server and engine versions must match; a new server talks new protocol lines to the engine.
-- Model files (Strata-data) are never touched by any step above.
-- First start after an engine swap re-reads the model; expect the usual 1–3 min load and a slow
-  first request while the resident expert pool pages in.
-<<<<<<< Updated upstream
-=======
-Verified 2026-10-07: v0.1.39 → v0.1.40.1 (code + engine together), config untouched.
-Hand-tuned pieces that every update must preserve: `strata-coder-iq1_m.json` +
-`run-coder-iq1_m.bat` (both gitignored — git never touches them), calibrated
-`--pcie-frac 0.35` / `--spec-min-p 0.70`, F:\STRATA paths, port 4444.
-
-## Lineage warning (read first)
-
-This clone's git history does **not** share commits with the current upstream `main`
-(the sak2k-bio fork force-reset its `main` to pure upstream). `git pull --ff-only` will
-refuse. The update is: create a **new branch from `upstream/main`**, keep the old
-branch as the rollback point. Do **not** `git reset --hard` the old branch away.
 
 ## Do NOT use UPDATE.bat / START-HERE.bat --update here
 
 They re-run setup, which rewrites run-config args. The manual steps below take ~10
 minutes and leave every hand-tuned value intact.
 
-## Update procedure (code + engine — always together)
+## Lineage warning (read first)
+
+This clone's git history does **not** share commits with the current upstream `main`
+(the sak2k-bio fork force-reset its `main` to pure upstream). `git pull --ff-only` will
+refuse. Update by creating a **new branch from `upstream/main`**, keeping the old
+branch as the rollback point. Do **not** `git reset --hard` the old branch away.
+
+## Update procedure (server code + engine — always together)
 
 1. **Stop the server** (close the run bat; port 4444 must be free).
-2. **Back up tracked docs** — files committed in the old lineage but absent upstream
-   are deleted from disk by the branch switch:
+2. **Back up the docs** — `CUSTOM_3060_32gb.md` and `QUICK_UPDATE.md` are tracked on
+   `3060_vram` but **absent upstream**, so the branch switch deletes them from disk:
    ```
    mkdir F:\STRATA\repo-docs-backup-<date>
    copy Strata\CUSTOM_3060_32gb.md Strata\QUICK_UPDATE.md F:\STRATA\repo-docs-backup-<date>\
@@ -125,16 +47,15 @@ minutes and leave every hand-tuned value intact.
    - Check `Strata\engine\BUILD.json` shows the new `version`.
 6. **Python deps**: `git diff <oldbranch> upstream/main -- requirements.txt` — if
    changed: `.venv\Scripts\python.exe -m pip install -r requirements.txt`.
-   (0.1.40: unchanged.)
+   (0.1.43: unchanged.)
 7. **Config args**: check the new `src/program/generate.cpp` help text / DETAILS.md
-   for removed flags. All of ours survived 0.1.40 (`--kv-grow` is new, opt-in).
+   for removed flags. All of ours survived 0.1.43.
 8. **Start** `run-coder-iq1_m.bat` and verify:
    - `curl http://127.0.0.1:4444/health` → `"loaded":true`
    - `GET /v1/status` (API key) → `"engine":"<new version>"`
    - One chat request returns a correct answer with sane `timings`.
-   - Log tail: `session is up (engine <ver>)`, expert-cache slot count, the chosen
-     `prompt chunk auto: N tokens` line, no `WARNING` beyond the known resident-RAM
-     fallback (expected on 32 GB).
+   - Log tail: `session is up (engine <ver>)`, expert-cache slot count, no `WARNING`
+     beyond the known resident-RAM fallback (expected on 32 GB).
 
 ## Rollback (~2 minutes)
 
@@ -144,18 +65,23 @@ minutes and leave every hand-tuned value intact.
 
 ## Notes
 
-- Server and engine versions must match; setup enforces a minimum engine version.
-- Model files (Strata-data) are never touched by any step above.
-- First start after an engine swap re-reads the model: expect the usual 1–3 min load
-  and a slow first request while the resident expert pool pages in.
-- Engine zips accumulate at `F:\STRATA\strata-engine-*.zip` (~126 MB each); delete old
-  ones once the update is verified.
->>>>>>> Stashed changes
-=======
+- **Keep code and engine in sync.** They are separate artifacts and drift silently: the
+  engine lives on disk in `engine\` while the server code comes from whichever git branch
+  is checked out. A 0.1.43 engine under 0.1.40-era server code runs (the protocol is
+  compatible) but you do not get the new server behaviour, and the branch's source will
+  disagree with `engine\BUILD.json`. After any branch switch, confirm the two match.
+- **Never commit conflict markers.** A `git stash pop` that collides with tracked copies
+  writes `<<<<<<<` / `>>>>>>>` into the file; committing that poisons the docs for every
+  later checkout, and `git checkout <branch>` will not heal it. Check with
+  `findstr /c:"<<<<" <file>` before committing. Clean versions of both docs survive at
+  commit `834ded74`.
 - Timings live in the `timings` block of the chat response (`predicted_per_second` =
   decode, `prompt_per_second` = prefill) — not under `usage`.
 - From 0.1.41 the CPU prefill share is on by default for our shape (CUDA, one GPU, no batch
   slots), but 0.1.42 added a memory guard: on this 32 GB box the engine declines it and logs
   `the CPU prefill share is not armed by default: ... only 4.7 GiB of RAM is free`. That is
   expected and correct here — do not force it on.
->>>>>>> Stashed changes
+- Server and engine versions must match; a new server talks new protocol lines to the engine.
+- Model files (Strata-data) are never touched by any step above.
+- First start after an engine swap re-reads the model; expect the usual 1–3 min load and a slow
+  first request while the resident expert pool pages in.
