@@ -1,10 +1,18 @@
 # QUICK_UPDATE.md — safely update Strata (RTX 3060 / 32 GB install)
 
 <<<<<<< Updated upstream
+<<<<<<< Updated upstream
 Verified 2026-10-05: v0.1.38 → v0.1.39, server + engine together, custom config untouched.
 This install carries hand-tuned pieces: `strata-coder-iq1_m.json` + `run-coder-iq1_m.bat` (both
 gitignored — git never touches them), calibrated `--pcie-frac 0.35` / `--spec-min-p 0.70`,
 F:\STRATA paths, port 4444, and a local `setup.py` disk-check patch.
+=======
+Verified 2026-10-12: v0.1.40.1 → v0.1.43, server + engine together, custom config untouched
+(branch `update-0.1.43`; previous procedure verified 2026-10-05, v0.1.38 → v0.1.39).
+This install carries hand-tuned pieces: `strata-coder-iq1_m.json` + `run-coder-iq1_m.bat` (both
+gitignored — git never touches them), calibrated `--pcie-frac 0.35` / `--spec-min-p 0.70`,
+F:\STRATA paths, and port 4444.
+>>>>>>> Stashed changes
 
 ## Do NOT use UPDATE.bat / START-HERE.bat --update here
 
@@ -14,10 +22,22 @@ leave every hand-tuned value intact.
 ## Update procedure (server code + engine — always together)
 
 1. **Stop the server** (close the run bat; port 4444 must be free).
+<<<<<<< Updated upstream
 2. **Stash local changes**: `git -C Strata status` — stash every modified file,
    e.g. `git -C Strata stash push -m "local patches" -- setup.py`.
 3. **Pull**: `git -C Strata pull --ff-only`. Fails if anything is dirty — stash first, never force.
 4. **Restore**: `git -C Strata stash pop` (should auto-merge; resolve by hand if not).
+=======
+2. **Back up the untracked docs** — this is the step that is easy to miss:
+   `CUSTOM_3060_32gb.md` and `QUICK_UPDATE.md` are **not tracked by git**, so any branch
+   switch or `git checkout` deletes them from disk. Copy both to `F:\STRATA\repo-docs-backup-<date>\`
+   first, then restore them after the switch.
+3. **Branch off upstream** (a plain `pull --ff-only` fails here — this clone's history was
+   rewritten upstream and no longer shares commits):
+   `git -C Strata fetch upstream && git -C Strata checkout -b update-<ver> upstream/main`.
+   Keep the previous update branch as the rollback point.
+4. **Restore the docs** into `Strata\` from the backup in step 2.
+>>>>>>> Stashed changes
 5. **Engine** (not in git — a prebuilt download):
    - Release notes pick the zip: `strata-windows-x64.zip` (CUDA 13, driver 580+) or
      `...-cuda12.zip` (driver 528+). This PC: driver 616 → cuda13.
@@ -26,9 +46,15 @@ leave every hand-tuned value intact.
    - Backup: copy `strata.exe`, `strata-vision.exe`, `BUILD.json` → `Strata\engine-backup-<oldver>\`.
    - Install: PowerShell `Expand-Archive -Path $env:TEMP\strata-engine.zip -DestinationPath Strata\engine -Force`.
 6. **Python deps**: `git diff <oldsha>..<newsha> -- requirements.txt` — if changed:
+<<<<<<< Updated upstream
    `.venv\Scripts\python.exe -m pip install -r requirements.txt`. (0.1.39: unchanged.)
 7. **Config args**: check the release notes / new `src/program/generate.cpp` for removed flags.
    All of ours survived 0.1.39.
+=======
+   `.venv\Scripts\python.exe -m pip install -r requirements.txt`. (0.1.43: unchanged.)
+7. **Config args**: check the release notes / new `src/program/generate.cpp` for removed flags.
+   All of ours survived 0.1.43.
+>>>>>>> Stashed changes
 8. **Start** `run-coder-iq1_m.bat` and verify:
    - `curl http://127.0.0.1:4444/health` → `"loaded":true`
    - `GET /v1/status` (with API key) → `"engine":"<new version>"`
@@ -37,7 +63,12 @@ leave every hand-tuned value intact.
 ## Rollback
 
 - Engine: copy `engine-backup-<ver>\*` back over `engine\`.
+<<<<<<< Updated upstream
 - Code: `git -C Strata reset --hard <old sha>`; local patches re-apply from the stash entry.
+=======
+- Code: `git -C Strata checkout <previous update branch>` (each update leaves one behind as
+  the rollback point), then restore that version's engine from its `engine-backup-<ver>\`.
+>>>>>>> Stashed changes
 - Config/bat: not in git — keep your own backup copy if you edit them.
 
 ## Notes
@@ -46,6 +77,7 @@ leave every hand-tuned value intact.
 - Model files (Strata-data) are never touched by any step above.
 - First start after an engine swap re-reads the model; expect the usual 1–3 min load and a slow
   first request while the resident expert pool pages in.
+<<<<<<< Updated upstream
 =======
 Verified 2026-10-07: v0.1.39 → v0.1.40.1 (code + engine together), config untouched.
 Hand-tuned pieces that every update must preserve: `strata-coder-iq1_m.json` +
@@ -118,4 +150,12 @@ minutes and leave every hand-tuned value intact.
   and a slow first request while the resident expert pool pages in.
 - Engine zips accumulate at `F:\STRATA\strata-engine-*.zip` (~126 MB each); delete old
   ones once the update is verified.
+>>>>>>> Stashed changes
+=======
+- Timings live in the `timings` block of the chat response (`predicted_per_second` =
+  decode, `prompt_per_second` = prefill) — not under `usage`.
+- From 0.1.41 the CPU prefill share is on by default for our shape (CUDA, one GPU, no batch
+  slots), but 0.1.42 added a memory guard: on this 32 GB box the engine declines it and logs
+  `the CPU prefill share is not armed by default: ... only 4.7 GiB of RAM is free`. That is
+  expected and correct here — do not force it on.
 >>>>>>> Stashed changes
