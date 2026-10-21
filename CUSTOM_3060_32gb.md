@@ -58,22 +58,25 @@ response, not under `usage`.
 
 ### Measured A/B: engine 0.1.45 vs 0.1.47 on this box
 
-Interleaved rounds (swap the engine, restart, warm up 6, measure 6; ~22–23 GiB free RAM at
-every engine start so the resident pool is comparable). Medians of each round:
+Two interleaved rounds (swap the engine, restart, warm up, measure; ~22–23 GiB free RAM at
+every engine start so the resident pool is comparable). Each request carries a unique suffix
+so the prompt cache cannot serve it — every run reads the prompt for real. The prompt is real
+prose from `docs\DETAILS.md`, not repeated filler, so it behaves like an agent conversation.
 
-| Round | prefill 0.1.45 → 0.1.47 | decode 0.1.45 → 0.1.47 |
-| ----- | ----------------------- | ---------------------- |
-| A     | 514.6 → 530.2 (+3.0%)   | 34.8 → 32.5 (-6.6%)    |
-| B     | 472.4 → 546.4 (+15.7%)  | 32.6 → 36.8 (+12.9%)   |
-| C     | 597.4 → 619.9 (+3.8%)   | 35.1 → 38.6 (+10.0%)   |
-| all 4 | 597.4 → 564.0 (-5.6%)   | 35.1 → 38.6 (+10.0%)   |
+**Decode (tok/s) — 0.1.47 won 6 of 6 paired comparisons:**
 
-**Prefill: parity.** **Decode: 0.1.47 wins 2 of 3 paired rounds, +10% in the medians.** The
-spread within one engine (prefill 472–639, decode 32.6–43.7) is as large as the difference
-between engines, so treat the decode gain as *probably real, roughly +10%* rather than precise.
-Upstream measured the same on an RTX 3060 12 GB: **60.36 → 66.52 tok/s (+10.2%, 8 of 8 pairs),
-same answers** (identity gate identical on 10 prompts with exact checks at 4K and 20K). Our
-measurement is consistent with that.
+| Context | 0.1.45 | 0.1.47 | Gain |
+| ------- | ------ | ------ | ---- |
+| 1.7K    | 28.9   | 31.0   | **+7.4%** |
+| 6K      | 26.6   | 29.6   | **+11.5%** |
+| 13K     | 25.2   | 27.2   | **+7.9%** |
+
+Per round: 1.7K +7.3% / +7.6%, 6K +5.3% / +18.3%, 13K +15.0% / +1.5%. Six wins out of six is
+a real signal, and it matches upstream's own measurement on an RTX 3060 12 GB:
+**60.36 → 66.52 tok/s (+10.2%, 8 of 8 pairs), same answers** (identity gate identical on 10
+prompts, exact checks at 4K and 20K).
+
+**Prefill: parity.** 1.7K +0.5%, 6K -2.5%, 13K +3.3% — inside the noise.
 
 The gain is `STRATA_SM86_PERF`, a table of nine switches the engine now turns on by itself on
 sm_86. The start-up log names them:
@@ -85,6 +88,39 @@ ATTN_DAILY GR_UP75 GU_SWIGLU QSA_ROWS B6_MMVQ_ROWS
 ```
 
 `STRATA_SM86_PERF=0` in the config's `env` block turns the whole table off.
+
+The gain is largest at 6K and grows with context, which fits the switch list: `ADAPT_NOWAIT`
+and `ADAPT_LAG` change how the adaptive tier keeps the GPU cache fed, and that matters most
+once the context is long enough to miss many experts.
+
+### Known issue: the VRAM reserve is now too low (not a 0.1.47 regression)
+
+The engine logs this at the start of some requests:
+
+```
+WARNING: only 514 MiB of VRAM free at the start of this request (below 1024 MiB): when the
+card is this full the driver can page GPU memory to system RAM, decode falls to a few tok/s
+and a window may never finish (#2065). Add --vram-reserve-mib 1664 to the config's args, or
+lower --max-context / --batch
+```
+
+Counted over every session in `strata-coder-iq1_m.log`:
+
+| Engine | Requests | VRAM-low warnings |
+| ------ | -------- | ----------------- |
+| 0.1.43 | 370      | 0                 |
+| 0.1.45 | 275      | 22 (8%)           |
+| 0.1.47 | 193      | 15 (7.8%)         |
+
+**0.1.45 introduced this, not 0.1.47** — 0.1.43 never logged it, and 0.1.45 and 0.1.47 are
+the same rate. The reserve of 999 MiB was calibrated against 0.1.43, where the engine's own
+cache sizing left more VRAM over. Upstream now recommends **1664** for a card like this.
+
+The trade-off is real: a bigger reserve means fewer expert slots in the GPU cache (the
+reserve is subtracted before the cache is sized), so it costs some decode speed and buys
+headroom against driver paging. This is worth trying with a real agent session running and
+watching whether the warning appears and whether decode collapses; it is not changed in the
+config yet because 999 was a deliberate calibration.
 
 ### Answers are not byte-stable on this box — do not read that as a regression
 
