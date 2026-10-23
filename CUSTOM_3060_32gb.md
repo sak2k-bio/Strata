@@ -122,7 +122,71 @@ headroom against driver paging. This is worth trying with a real agent session r
 watching whether the warning appears and whether decode collapses; it is not changed in the
 config yet because 999 was a deliberate calibration.
 
-### Answers are not byte-stable on this box — do not read that as a regression
+### The MTP draft layer, and why `flash-next-mtp` cannot be used
+
+The config's `--mtp F:\STRATA\Strata-data\mtp\rt` is the **draft layer** that makes speculative
+decoding work. Its provenance:
+
+1. `tools/mtp_fetch.py` pulls the 31 `mtp.*` tensors out of the **BF16 checkpoint**.
+2. `tools/mtp_pack.py --experts q2_0` quantizes the routed experts into `mtp-q2_0.gguf`.
+3. `tools/mtp_rt.py` rewrites that into the runtime folder the engine reads: `dense.bin` +
+   `experts.bin` + `dense.txt` (a one-line-per-tensor manifest with offsets).
+
+Ours: `mtp-q2_0.gguf` is 847.8 MiB, 512 routed experts at **Q2_0**; at load the engine reports
+`draft layer loaded, 878 MiB of VRAM (experts 675, dense 111)` and a `draft head over 40525
+tokens` — 40525 ids is the English/code subset, which is what `draft_vocab: en` selects.
+
+**`Strata-data\models\coder-IQ1_M\flash-next-mtp` contains no usable MTP.** The two files are
+the *same* draft block in a different lineage:
+
+| | ours (`mtp-q2_0.gguf`) | flash-next-mtp |
+| --- | --- | --- |
+| architecture tag | `qwen4exp-mtp` | `qwen4exp` |
+| tensor names | `mtp.layers.0.*`, `mtp.*` | `blk.48.*` (llama.cpp naming) |
+| routed experts | `mtp.layers.0.mlp.experts.*` | `blk.48.ffn_{gate,up}_exps` (Q4_K), `ffn_down_exps` (Q8_0) |
+
+Proof, not inference: `tools\mtp_rt.py` on
+`mtp-Qwen3.8-Flash-Next-Q4_K_M.gguf` fails immediately with
+`KeyError: 'mtp.layers.0.mlp.experts.gate_up_proj'`. The engine reads **only** the `rt`
+folder (`mtp: cannot open <dir>/dense.txt`), and its MTP expert blob is Q2_0 by construction —
+18 bytes per 64 values, the same layout as the main model's experts, which is what lets the
+same VNNI/GPU kernels serve it. There is no path in 0.2.2 that accepts a `blk.48.*` Q4_K MTP.
+
+Re-packing those files would also be pointless: `mtp_pack.py` builds q2_0 with a **per-block
+MSE scale search** from the BF16 checkpoint (the lossless source), so our q2_0 is already the
+best q2_0 obtainable. Feeding it an already-lossy Q4_K MTP could only give an equal or worse
+q2_0, in the same format — no speed to gain.
+
+### `--mtp-q4` (opt-in): works, no demonstrated gain — left off
+
+0.1.47 supports `--mtp-q4 all|proj|head`, which keeps the draft layer's projections and/or
+draft head as Q4_0 copies "fewer bytes per draft step". It does what it says:
+
+```
+strata mtp: --mtp-q4: draft head over 40525 tokens as Q4_0 (55.7 MiB read per step, was 81.2)
+strata mtp: --mtp-q4: 10 projections as Q4_0 (37.3 MiB)
+strata mtp: draft layer loaded, 915 MiB of VRAM (experts 675, dense 111)
+```
+
+But it did **not** produce a measurable decode gain. Draft acceptance on matched runs stayed
+inside the baseline's own spread: baseline sessions on the same synthetic workload ranged
+**66.7% – 87.9%**, and the `--mtp-q4 all` session measured **75.0%**. One session of 14 windows
+is not enough to resolve a few percent on this box, and the change is opt-in and off by
+default, so it is left off. Test configs are regenerable with
+`F:\STRATA\bench\make_mtp_configs.py`.
+
+### Measurement trap: the resident pool, not the flag
+
+The engine's resident RAM pool is sized from MemAvailable at start and swung **7.98 – 16.25 GiB**
+across otherwise identical restarts, which moves decode speed by roughly ±30%. That is larger
+than any effect measured here, so **comparing two arms across different pools is invalid** — an
+early pass of this work reported a "10-point acceptance drop" for `--mtp-q4` that turned out to
+be an artifact of comparing one synthetic session against older real-traffic sessions. Always
+record the pool from `resident RAM mode: ... GiB of experts in RAM` and only compare runs whose
+pools match; `F:\STRATA\bench\mtp_stats.py` prints per-session acceptance, pool and decode from
+the log so the comparison is visible rather than assumed.
+
+
 
 The same prompt twice on the **same** engine gives different text (the adaptive expert tier
 moves experts between VRAM and RAM, so decode is not run-to-run deterministic here). Measured:
