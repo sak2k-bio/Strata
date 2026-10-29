@@ -45,16 +45,28 @@ cd /d "F:\STRATA\Strata"
 
 ## Expected speed (measured)
 
-Engine **0.1.47** (app 0.2.2), 2026-10-21. Timings live in the `timings` block of the chat
+Engine **0.1.52** (app 0.2.7.1), 2026-10-29. Timings live in the `timings` block of the chat
 response, not under `usage`.
 
-| Workload                          | Speed                    |
-| --------------------------------- | ------------------------ |
-| Short replies (decode)            | ~32–44 tok/s             |
-| Small-prompt prefill (~5–62 tok)  | ~46–64 tok/s             |
-| ~1.7K-token prompt prefill        | ~472–639 tok/s           |
-| 12.7K-token prompt prefill        | **854 tok/s** (cold, 0.1.45) |
-| Repeat turn, cached conversation  | 12763 of 12781 tokens reused |
+**Every number here is a function of the resident expert pool, not just the engine.** The engine
+sizes that pool from available RAM at start, and on this box it ranged 3.65–16.25 GiB across
+restarts of *identical* builds, moving decode by ~2.6× and disk reads per request by ~3.5×.
+Read the pool next to the number or the number means nothing:
+
+| Workload                          | Speed                        | Resident pool |
+| --------------------------------- | ---------------------------- | ------------- |
+| 1.7K-token prompt, decode         | 25–29 tok/s                  | 10–14 GiB     |
+| 13K-token prompt, decode          | 22–26 tok/s                  | 10–14 GiB     |
+| 1.7K-token prompt, prefill        | 597–711 tok/s                | 10–14 GiB     |
+| 13K-token prompt, prefill         | 346–444 tok/s                | 10–14 GiB     |
+| Short replies, decode             | ~32–44 tok/s                 | 14+ GiB (0.1.47) |
+| 12.7K-token prompt prefill        | **854 tok/s** (cold, 0.1.45) | ~15 GiB       |
+| Repeat turn, cached conversation  | 12763 of 12781 tokens reused | —             |
+
+**0.1.52 is not measurably faster than 0.1.47 on this box.** The interleaved 0.1.45-vs-0.1.47
+rounds below put 0.1.47 ahead by 7–12%, and 0.1.52's own warm runs landed in the same band at a
+comparable pool. 0.2.7's addition (residency-biased routing) changed nothing here — it is on by
+default on this card and its routing counters did not move; see the 0.2.7 section below.
 
 ### Measured A/B: engine 0.1.45 vs 0.1.47 on this box
 
@@ -113,8 +125,10 @@ Counted over every session in `strata-coder-iq1_m.log`:
 | 0.1.47 | 193      | 15 (7.8%)         |
 
 **0.1.45 introduced this, not 0.1.47** — 0.1.43 never logged it, and 0.1.45 and 0.1.47 are
-the same rate. The reserve of 999 MiB was calibrated against 0.1.43, where the engine's own
-cache sizing left more VRAM over. Upstream now recommends **1664** for a card like this.
+the same rate. **0.1.52 neither fixes nor worsens it:** 11 warnings over 6 sessions (1.8 per
+session), against 2.0 per session for both 0.1.45 and 0.1.47. The reserve of 999 MiB was
+calibrated against 0.1.43, where the engine's own cache sizing left more VRAM over. Upstream
+now recommends **1664** for a card like this.
 
 The trade-off is real: a bigger reserve means fewer expert slots in the GPU cache (the
 reserve is subtracted before the cache is sized), so it costs some decode speed and buys
@@ -237,7 +251,7 @@ Proof, not inference: `tools\mtp_rt.py` on
 `KeyError: 'mtp.layers.0.mlp.experts.gate_up_proj'`. The engine reads **only** the `rt`
 folder (`mtp: cannot open <dir>/dense.txt`), and its MTP expert blob is Q2_0 by construction —
 18 bytes per 64 values, the same layout as the main model's experts, which is what lets the
-same VNNI/GPU kernels serve it. There is no path in 0.2.2 that accepts a `blk.48.*` Q4_K MTP.
+same VNNI/GPU kernels serve it. There is no path in 0.2.7 that accepts a `blk.48.*` Q4_K MTP.
 
 Re-packing those files would also be pointless: `mtp_pack.py` builds q2_0 with a **per-block
 MSE scale search** from the BF16 checkpoint (the lossless source), so our q2_0 is already the
@@ -246,8 +260,8 @@ q2_0, in the same format — no speed to gain.
 
 ### `--mtp-q4` (opt-in): works, no demonstrated gain — left off
 
-0.1.47 supports `--mtp-q4 all|proj|head`, which keeps the draft layer's projections and/or
-draft head as Q4_0 copies "fewer bytes per draft step". It does what it says:
+0.1.52 (and 0.1.47 before it) supports `--mtp-q4 all|proj|head`, which keeps the draft layer's
+projections and/or draft head as Q4_0 copies "fewer bytes per draft step". It does what it says:
 
 ```
 strata mtp: --mtp-q4: draft head over 40525 tokens as Q4_0 (55.7 MiB read per step, was 81.2)
@@ -273,38 +287,45 @@ record the pool from `resident RAM mode: ... GiB of experts in RAM` and only com
 pools match; `F:\STRATA\bench\mtp_stats.py` prints per-session acceptance, pool and decode from
 the log so the comparison is visible rather than assumed.
 
-
+### Answers are not byte-stable on this box — do not read that as a regression
 
 The same prompt twice on the **same** engine gives different text (the adaptive expert tier
 moves experts between VRAM and RAM, so decode is not run-to-run deterministic here). Measured:
 two identical greedy requests on 0.1.45 differed on 2 of 3 prompts. So a text difference
-between 0.1.45 and 0.1.47 says nothing about the update; upstream's own bitwise identity gate
+between two engines says nothing about the update; upstream's own bitwise identity gate
 covers that.
 
-### Long prompts (30K+) — older engine sessions, real agent traffic
+### Long prompts (30K+) — real agent traffic
 
-Realistic baselines from earlier sessions in `strata-coder-iq1_m.log`, carried forward because no
-session has yet run a long conversation on 0.1.47:
+Realistic baselines from earlier sessions in `strata-coder-iq1_m.log`. These rows are the ones
+a long coding session actually produces, as opposed to the synthetic curve above:
 
-- 58–66K-token prompt: **854–893 tok/s** cold prefill (0 reused), on 0.1.43.
+- 58–66K-token prompt: **854–893 tok/s** cold prefill (0 reused), measured on 0.1.43.
 - 13–59K context, agent turn: **28–41 tok/s** decode, 512–12442 tokens per reply, on 0.1.43.
 - Repeat turns on a cached conversation: prompt reuse is near-total (e.g. 68921 of 69487 tokens),
   so the incremental prefill per turn stays small.
 
-Re-measure these on 0.1.47 after a long coding session has run through it.
+Not yet re-measured on 0.1.52 with a long agent session through it. Given the pool sensitivity
+above, do that with the pool recorded.
 
-### Engine defaults worth knowing (0.1.45 → 0.1.47)
+### Engine defaults worth knowing (0.1.45 → 0.2.7)
 
 - `STRATA_SM86_PERF` (0.2.0+, on by default on sm_86): the nine-switch decode table above.
-  `=0` turns it off. **This is the reason to take 0.1.47 on this card.**
+  `=0` turns it off. **This is the reason to take the 0.2.x line on this card.**
+- `STRATA_ROUTE_PRIOR` (0.2.7, on by default when a discrete NVIDIA card has ≤13 GiB): the
+  router prefers experts already on the card. Measured above: **no effect here** — the counters
+  do not move. `=0` pins it off; `STRATA_DEFAULTS=026` reverts every 0.2.7 Qwen default at once.
+- `STRATA_RESIDENT_HEADROOM_GIB` (0.2.7): GiB of available RAM left free at start (default 4).
+  This is what makes the pool deterministic — `pool = available − headroom − 0.25`. Use it for
+  any A/B; without it the pool wanders and the comparison is meaningless.
 - `STRATA_SSD_KEEPALIVE=1` (0.1.45, on by default): pings the SSD every 100 ms for 60 s after a
   request so it never spins down mid-stream — the right call for expert streaming. `=0` reverts.
 - `STRATA_ROUTE_TAIL_SKIP=7` (default since 0.1.43): +10–20% decode on 12–16 GB cards
   that miss experts; answers differ slightly from 0.1.41. `=0` for strict parity.
-- `STRATA_DF_QB_Q4=1` (new, on by default): a q4_0 KV cache takes the batched verify window —
-  a 6-token graph of 1950 nodes instead of 2610, identical token ids.
-- CPU prefill share is still correctly declined on this box (10.1 GiB of file pages vs 4.5 GiB RAM
-  free). Do not force it with `=auto`.
+- `STRATA_DF_QB_Q4=1` (on by default since 0.1.45): a q4_0 KV cache takes the batched verify
+  window — a 6-token graph of 1950 nodes instead of 2610, identical token ids.
+- CPU prefill share is still correctly declined on this box (14.0 GiB of file pages vs 4.4 GiB
+  RAM free). Do not force it with `=auto`.
 
 ## Data location: moved off the HDD (done)
 
