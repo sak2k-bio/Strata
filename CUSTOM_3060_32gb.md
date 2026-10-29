@@ -176,6 +176,22 @@ correct, health green) and the bug fixes are real — see `QUICK_UPDATE.md`. If 
 deterministic expert selection back, `STRATA_ROUTE_PRIOR=0` in the config's `env` block costs
 nothing measurable here.
 
+### New in 0.2.7: the Windows commit-limit warning (worth acting on)
+
+0.2.7 added a check the older engines did not have. On this box it fires every start:
+
+```
+strata serve: WARNING the Windows commit limit is 63.7 GiB (RAM + page file) and 5.4 GiB of it
+is left, but this run plans 2.0 GiB of host allocations and keeps 4.0 GiB free: it can end at
+the limit with no message (exit code 0xC0000409, #1607) while RAM is still free. Raise the page
+file (System managed, or RAM-sized) or lower --conversation-cache-mib / --max-context / --prefill
+```
+
+The commit limit (RAM + page file) is the real ceiling on this 32 GB machine, not RAM alone, and
+the run is close to it. If the engine ever exits silently with `0xC0000409`, this is why. Free
+fix: set the page file to System managed (or RAM-sized) in Windows. Nothing has been changed
+here — it is a system setting, not a Strata one.
+
 ### Measuring anything on this box: the pool is the instrument
 
 Every attempt in this session that compared two configurations without pinning the pool produced
