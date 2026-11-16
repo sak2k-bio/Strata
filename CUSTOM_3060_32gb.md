@@ -1,6 +1,6 @@
 # Strata on RTX 3060 12 GB + 32 GB RAM
 
-Tested optimal config for this exact hardware (verified 2026-10-12, engine **0.1.43**). Model: **Coder IQ1_M** — the only size 32 GB RAM fits, and the fastest-reading one (91% of full model on SWE-bench). Update procedure: see `QUICK_UPDATE.md`.
+Tested optimal config for this exact hardware (verified 2026-11-16, engine **0.1.60**, app **0.2.14**). Model: **Coder IQ1_M** — the only size 32 GB RAM fits, and the fastest-reading one (91% of full model on SWE-bench). Update procedure: see `QUICK_UPDATE.md`.
 
 TO RUN THE SERVER:
 cd /d "F:\STRATA\Strata"
@@ -23,6 +23,8 @@ cd /d "F:\STRATA\Strata"
 | `--prompt-cache-every`    | `4096`                       | checkpoint growing prompts every 4K tokens instead of 16K — agent clients (Claude Code) resend the whole conversation each turn, so this is what makes multi-turn work fast                 |
 | `fit_max_tokens`          | `true`                       | server clamps `max_tokens` to the context room instead of returning 400 — agent clients that overshoot get a shorter answer, not an error                                                   |
 | `--resident-experts`      | on                           | experts the GPU can't hold live in RAM, copied once at start                                                                                                                                |
+| `--lookup-max-t`          | `12` (engine default, not set in the config) | prompt-lookup windows propose long token runs from the prompt instead of drafting them: **+25% decode on agent file rewrites** (measured, pool-matched). `--lookup-max-t 0` turns it off |
+| `env`                     | `STRATA_WATCHDOG_S=0`, `STRATA_ROUTE_PRIOR=0` | watchdog off (no auto-shutdown); route prior pinned off — inert on this box, and upstream pulled its default back for agent use in 0.2.8. `STRATA_RESIDENT_HEADROOM_GIB` goes here too when an A/B needs a pinned pool |
 | `--host` / `--port`       | `0.0.0.0` / `4444`           | reachable from tailnet/LAN                                                                                                                                                                  |
 | `--api-key`               | see run bat                  | required — `/v1/*` returns 401 without it                                                                                                                                                   |
 
@@ -45,32 +47,353 @@ cd /d "F:\STRATA\Strata"
 
 ## Expected speed (measured)
 
-Short prompts, engine 0.1.43, 2026-10-12 (5-run medians from `strata-coder-iq1_m.log`; timings live in the `timings` block of the chat response, not under `usage`):
+Engine **0.1.60** (app 0.2.14), 2026-11-16. Timings live in the `timings` block of the chat
+response, not under `usage`.
 
-| Workload                          | Speed                    |
-| --------------------------------- | ------------------------ |
-| Short replies (decode)            | ~38–43 tok/s             |
-| Long replies (600 tok)            | ~31 tok/s                |
-| Small-prompt prefill (~5 tok)     | ~44–63 tok/s             |
-| ~950-token prompt prefill         | ~368 tok/s               |
-| Long prompts (20-66K tokens)      | see below — measured on 0.1.40 |
+**Every number here is a function of the resident expert pool, not just the engine.** The engine
+sizes that pool from available RAM at start, and on this box it ranged 3.65–16.25 GiB across
+restarts of *identical* builds, moving decode by ~2.6× and disk reads per request by ~3.5×.
+Read the pool next to the number or the number means nothing:
 
-### Long prompts (30K+) — engine 0.1.40, real agent traffic
+| Workload                          | Speed                        | Resident pool |
+| --------------------------------- | ---------------------------- | ------------- |
+| 1.7K-token prompt, decode         | 25–29 tok/s                  | 10–14 GiB     |
+| 13K-token prompt, decode          | 22–26 tok/s                  | 10–14 GiB     |
+| 1.7K-token prompt, prefill        | 597–711 tok/s                | 10–14 GiB     |
+| 13K-token prompt, prefill         | 346–444 tok/s                | 10–14 GiB     |
+| **Agent file rewrite, decode**    | **27–35 tok/s** (`--lookup-max-t 12`) | 11.5–14 GiB |
+| Short replies, decode             | ~32–44 tok/s                 | 14+ GiB (0.1.47) |
+| 12.7K-token prompt prefill        | **854 tok/s** (cold, 0.1.45) | ~15 GiB       |
+| Repeat turn, cached conversation  | 12763 of 12781 tokens reused | —             |
 
-These come from the **previous** engine session (the log's 0.1.40 block), not 0.1.43 — the only
-session that has carried long conversations. Realistic baseline:
+**0.1.47 → 0.1.52: not demonstrated, and not really demonstrable on this box.** The two engines
+were finally measured at a matched resident pool (~11 GiB): 0.1.47 **32.7 / 29.6** tok/s decode at
+1.7K / 13K, 0.1.52 **30.1 / 27.8**. So 0.1.52 is *not* faster, and if anything ~6–8% slower — but
+that is a single round and this box swings 20–40% within a round. Earlier comparisons of these two
+were made at *different* pools (0.1.47 at 14–16 GiB against 0.1.52 at 10–13.5 GiB) and prove
+nothing in either direction. What *is* established:
 
-- 66K-token prompt: **758 tok/s** cold prefill (0 reused).
-- 66–72K context, agent turn: **20–28 tok/s** decode, 200–740 tokens per reply, 91–93% draft acceptance.
+- The one new default in the 0.2.7 line that touches decode speed is **residency-biased routing**,
+  and it is not new code: it is already in 0.1.47, where `src/core/verify.cpp` reads
+  `STRATA_ROUTE_PRIOR` and defaults it to **0.0** (off). 0.2.7 only turned the default on at 1.5,
+  and 0.2.8 took that back. A matched-pool ON-vs-OFF test shows it is **inert here**.
+- The remaining engine-level changes are small; upstream's own Ampere measurement (two RTX A4000)
+  is **+2.2% story / +0.5% code**, inside this box's noise.
+
+So the 0.2.x line has been worth taking for its **fixes and its new mechanisms** — the
+prompt-lookup windows of 0.2.14 are the one that measured large on this box — never for the engine
+simply being faster. See the 0.2.14 section for the win and the 0.2.7 section for the route prior.
+
+### Measured A/B: engine 0.1.45 vs 0.1.47 on this box
+
+Two interleaved rounds (swap the engine, restart, warm up, measure; ~22–23 GiB free RAM at
+every engine start so the resident pool is comparable). Each request carries a unique suffix
+so the prompt cache cannot serve it — every run reads the prompt for real. The prompt is real
+prose from `docs\DETAILS.md`, not repeated filler, so it behaves like an agent conversation.
+
+**Decode (tok/s) — 0.1.47 won 6 of 6 paired comparisons:**
+
+| Context | 0.1.45 | 0.1.47 | Gain |
+| ------- | ------ | ------ | ---- |
+| 1.7K    | 28.9   | 31.0   | **+7.4%** |
+| 6K      | 26.6   | 29.6   | **+11.5%** |
+| 13K     | 25.2   | 27.2   | **+7.9%** |
+
+Per round: 1.7K +7.3% / +7.6%, 6K +5.3% / +18.3%, 13K +15.0% / +1.5%. Six wins out of six is
+a real signal, and it matches upstream's own measurement on an RTX 3060 12 GB:
+**60.36 → 66.52 tok/s (+10.2%, 8 of 8 pairs), same answers** (identity gate identical on 10
+prompts, exact checks at 4K and 20K).
+
+**Prefill: parity.** 1.7K +0.5%, 6K -2.5%, 13K +3.3% — inside the noise.
+
+The gain is `STRATA_SM86_PERF`, a table of nine switches the engine now turns on by itself on
+sm_86. The start-up log names them:
+
+```
+strata: sm_86 (Ampere): 9 exact speed switches on by default (STRATA_SM86_PERF=0 turns them
+off; a switch you set is kept): ADAPT_NOWAIT ADAPT_LAG CPU_IQ_ALL_EXACT1 SIDE_MIXER
+ATTN_DAILY GR_UP75 GU_SWIGLU QSA_ROWS B6_MMVQ_ROWS
+```
+
+`STRATA_SM86_PERF=0` in the config's `env` block turns the whole table off.
+
+The gain is largest at 6K and grows with context, which fits the switch list: `ADAPT_NOWAIT`
+and `ADAPT_LAG` change how the adaptive tier keeps the GPU cache fed, and that matters most
+once the context is long enough to miss many experts.
+
+### Known issue: the VRAM reserve is now too low (not a 0.1.47 regression)
+
+The engine logs this at the start of some requests:
+
+```
+WARNING: only 514 MiB of VRAM free at the start of this request (below 1024 MiB): when the
+card is this full the driver can page GPU memory to system RAM, decode falls to a few tok/s
+and a window may never finish (#2065). Add --vram-reserve-mib 1664 to the config's args, or
+lower --max-context / --batch
+```
+
+Counted over every session in `strata-coder-iq1_m.log`:
+
+| Engine | Requests | VRAM-low warnings |
+| ------ | -------- | ----------------- |
+| 0.1.43 | 370      | 0                 |
+| 0.1.45 | 275      | 22 (8%)           |
+| 0.1.47 | 193      | 15 (7.8%)         |
+
+**0.1.45 introduced this, not 0.1.47** — 0.1.43 never logged it, and 0.1.45 and 0.1.47 are the
+same rate. It has drifted slowly down since, and **nothing in the 0.2.x line fixes or worsens it**:
+counted per session across every engine in the log, 0.1.45 2.0, 0.1.47 1.9, 0.1.52 1.5,
+0.1.60 1.3. The reserve of 999 MiB was calibrated against 0.1.43, where the engine's own cache
+sizing left more VRAM over. Upstream now recommends **1664** for a card like this.
+
+The trade-off is real: a bigger reserve means fewer expert slots in the GPU cache (the
+reserve is subtracted before the cache is sized), so it costs some decode speed and buys
+headroom against driver paging. This is worth trying with a real agent session running and
+watching whether the warning appears and whether decode collapses; it is not changed in the
+config yet because 999 was a deliberate calibration.
+
+### 0.2.14: the prompt-lookup windows are the first update that pays here (measured)
+
+Engine 0.1.52 → **0.1.60** (0.2.14; 0.2.15 ships the same engine files). Most of 0.2.9–0.2.13 is
+other platforms — Strix Halo/gfx12, Metal, SYCL, Mac, DeepSeek, new model shapes — and 0.2.15 is
+app/Terminal only. Two things do land on this install:
+
+**1. `--lookup-max-t 12`, on by default in the serve engine.** The start log confirms it:
+
+```
+strata serve: --lookup-max-t 12: MTP windows up to 4 tokens, window sizes 1,2,3,4,5,6,12
+```
+
+It proposes long runs of tokens by looking them up in the prompt instead of drafting them a step
+at a time, which is exactly what an agent's file-rewrite / edit turn needs. Measured here with
+`F:\STRATA\bench\ab_rewrite.py` — a real source file handed over with "output the whole file
+again with identifier X renamed to Y", so the output overlaps the prompt almost completely (each
+run renames a different identifier, so the prompt cache cannot serve it):
+
+| arm | resident pool | decode (median of 3) |
+| --- | --- | --- |
+| lookup ON (`--lookup-max-t 12`) | 11.50 GiB | **27.2 tok/s** |
+| lookup ON (`--lookup-max-t 12`) | 14.24 GiB | **34.7 tok/s** |
+| lookup OFF (`--lookup-max-t 0`) | 12.40 GiB | **21.8 tok/s** |
+
+**+25% with a *smaller* pool than the OFF arm** (27.2 against 21.8), and +59% when the ON arm had
+the bigger pool. The rewrite is very draft-friendly: 94.5% of drafts accepted (1878 of 1987).
+Upstream measured +11 to +14% on an RTX A6000 and a Tesla P100; the larger figure here is
+plausible because this box is far more disk-bound. **Ordinary prose is unaffected** (upstream:
+within 1%) — this is a win on rewrites and edit turns, not on chat.
+
+**2. The route prior is off again — by upstream's own decision.** 0.2.7 turned it on by itself on
+a card like this and **0.2.8 took that back** because it can repeat itself and gives weaker
+results in long agent sessions (#4402). This config now carries `STRATA_ROUTE_PRIOR=0` explicitly
+in its `env` block, so a future default cannot turn it back on.
+
+### 0.2.7 on this box: the route prior buys nothing here (measured)
+
+0.2.7's headline is **residency-biased routing** — the router prefers experts already on the
+card, to save page-ins. It is measured upstream on an **RTX 3060 12 GB**: story 46.2 → 53.1
+tok/s (+15%), code 45.7 → 62.5 (+37%), five paired runs, against the same build with it off.
+It is on by default on a discrete NVIDIA card of 13 GiB or less, which is this card:
+
+```
+strata verify: residency-biased routing is on by default on this card (STRATA_ROUTE_PRIOR=1.5:
+a card of 13 GiB or less; it changes which experts run; STRATA_ROUTE_PRIOR=0 turns it off)
+```
+
+**It does not reproduce here.** Two arms were run at the *same* resident pool by solving for the
+headroom that lands both on one pool size (`STRATA_RESIDENT_HEADROOM_GIB`, which the earlier
+attempts did not know about — the pool is `available RAM at start − headroom − 0.25`, so a fixed
+headroom gives a different pool every restart, and that confound swamped every prior attempt):
+
+| | route prior ON (1.5) | route prior OFF (0) |
+| --- | --- | --- |
+| resident pool | 10.10 GiB | 10.22 GiB |
+| requests | 32 | 32 |
+| GPU cache hit rate (median) | 71.1% | 72.8% |
+| experts over PCIe (median) | 6.0% | 5.6% |
+| disk read per request | 9,970 MB | 9,629 MB |
+| decode (median) | 29.4 tok/s | 11.4 tok/s |
+| prefill (median) | 115 tok/s | 42 tok/s |
+
+The routing counters — the *mechanism* the switch exists to change — are the same to within
+noise, and the disk traffic is no lower with it on. Across every session in the log, **disk reads
+per request track the pool size, not the flag**:
+
+| resident pool | disk read per request | route prior |
+| --- | --- | --- |
+| 3.65 GiB | 18,113 MB | ON |
+| 10.10 GiB | 9,970 MB | ON |
+| 10.22 GiB | 9,629 MB | OFF |
+| 13.52 GiB | 7,002 MB | ON |
+| 15.35 GiB | 5,157 MB | OFF |
+
+So the 2.6× decode gap in the table is **not** the flag: the OFF arm read *less* from disk and
+yet decoded slower, and prefill moved between 42 and 711 tok/s across runs of the *same* config.
+That is disk contention (this box sat at disk queue 13, 34% idle during the A/B), not routing.
+
+Why the lever is small here: the bias can only prefer experts in the **GPU** cache, and this
+install's cache is ~1,700 slots (~3.2 GiB) while the RAM pool holds 10–15 GiB. Most experts are
+therefore resident in RAM regardless, so biasing toward the card's own copy has almost nothing
+to move. Upstream's +15–37% was measured on IQ3_XXS; this install runs IQ1_M with a hand-tuned
+`--pcie-frac`/`--spec-min-p` and a large RAM pool.
+
+**Upstream reached the same conclusion from the quality side, and reverted it.** DETAILS.md at
+0.2.14 records: *"0.2.7 turned 1.5 on by itself on those cards and **0.2.8 took that back** (owner
+decision of 2026-10-29) … it can repeat itself and give weaker results in long agent sessions
+(#4402; 4.5 of 10 agent tasks passed against 5.6 with it off). Recommended for a 12 GB card used
+mostly for chat and short answers, **not for long agent runs**."* My measurement says it buys
+nothing here; upstream says it costs agent quality. Both point the same way — **turn it off**,
+neither default is worth keeping on a card driven by agents.
+
+**Verdict: keep 0.2.7 for its fixes, not for its speed.** Nothing regressed (same flags, answers
+correct, health green) and the bug fixes are real — see `QUICK_UPDATE.md`.
+
+### New in 0.2.7: the Windows commit-limit warning (worth acting on)
+
+0.2.7 added a check the older engines did not have. On this box it fires every start:
+
+```
+strata serve: WARNING the Windows commit limit is 63.7 GiB (RAM + page file) and 5.4 GiB of it
+is left, but this run plans 2.0 GiB of host allocations and keeps 4.0 GiB free: it can end at
+the limit with no message (exit code 0xC0000409, #1607) while RAM is still free. Raise the page
+file (System managed, or RAM-sized) or lower --conversation-cache-mib / --max-context / --prefill
+```
+
+The commit limit (RAM + page file) is the real ceiling on this 32 GB machine, not RAM alone, and
+the run is close to it. If the engine ever exits silently with `0xC0000409`, this is why. Free
+fix: set the page file to System managed (or RAM-sized) in Windows. Nothing has been changed
+here — it is a system setting, not a Strata one.
+
+### Measuring anything on this box: the pool is the instrument
+
+Every attempt in this session that compared two configurations without pinning the pool produced
+a wrong answer. The engine sizes its resident expert pool from **available RAM at start**, and on
+this machine that figure swung 3.65 → 16.25 GiB between restarts of identical builds, moving
+decode by ~2.6× and disk reads per request by ~3.5×. Two rules follow:
+
+1. **Pin the pool, don't hope.** Set `STRATA_RESIDENT_HEADROOM_GIB` so both arms land on the same
+   pool, and read the realised value back from `resident RAM mode: ... GiB of experts in RAM`.
+   `F:\STRATA\bench\start_matched.ps1` does this; `ab_cfg_cycle.ps1` cannot.
+2. **Prefer the engine's own counters to wall-clock.** `F:\STRATA\bench\route_stats.py` and
+   `disk_stats.py` read GPU-cache hit rate, PCIe share and disk MB/request per session. Decode
+   tok/s is disk-bound on this install and swings 2× run to run; the counters do not.
+
+Free RAM must also be left alone long enough: the previous engine holds ~17 GiB and Windows takes
+minutes to hand it back. Starting before that happens is exactly what produced the 3.65 GiB pool.
+
+### The MTP draft layer, and why `flash-next-mtp` cannot be used
+
+The config's `--mtp F:\STRATA\Strata-data\mtp\rt` is the **draft layer** that makes speculative
+decoding work. Its provenance:
+
+1. `tools/mtp_fetch.py` pulls the 31 `mtp.*` tensors out of the **BF16 checkpoint**.
+2. `tools/mtp_pack.py --experts q2_0` quantizes the routed experts into `mtp-q2_0.gguf`.
+3. `tools/mtp_rt.py` rewrites that into the runtime folder the engine reads: `dense.bin` +
+   `experts.bin` + `dense.txt` (a one-line-per-tensor manifest with offsets).
+
+Ours: `mtp-q2_0.gguf` is 847.8 MiB, 512 routed experts at **Q2_0**; at load the engine reports
+`draft layer loaded, 878 MiB of VRAM (experts 675, dense 111)` and a `draft head over 40525
+tokens` — 40525 ids is the English/code subset, which is what `draft_vocab: en` selects.
+
+**`Strata-data\models\coder-IQ1_M\flash-next-mtp` contains no usable MTP.** The two files are
+the *same* draft block in a different lineage:
+
+| | ours (`mtp-q2_0.gguf`) | flash-next-mtp |
+| --- | --- | --- |
+| architecture tag | `qwen4exp-mtp` | `qwen4exp` |
+| tensor names | `mtp.layers.0.*`, `mtp.*` | `blk.48.*` (llama.cpp naming) |
+| routed experts | `mtp.layers.0.mlp.experts.*` | `blk.48.ffn_{gate,up}_exps` (Q4_K), `ffn_down_exps` (Q8_0) |
+
+Proof, not inference: `tools\mtp_rt.py` on
+`mtp-Qwen3.8-Flash-Next-Q4_K_M.gguf` fails immediately with
+`KeyError: 'mtp.layers.0.mlp.experts.gate_up_proj'`. The engine reads **only** the `rt`
+folder (`mtp: cannot open <dir>/dense.txt`), and its MTP expert blob is Q2_0 by construction —
+18 bytes per 64 values, the same layout as the main model's experts, which is what lets the
+same VNNI/GPU kernels serve it. There is no path in 0.2.7 that accepts a `blk.48.*` Q4_K MTP.
+
+Re-packing those files would also be pointless: `mtp_pack.py` builds q2_0 with a **per-block
+MSE scale search** from the BF16 checkpoint (the lossless source), so our q2_0 is already the
+best q2_0 obtainable. Feeding it an already-lossy Q4_K MTP could only give an equal or worse
+q2_0, in the same format — no speed to gain.
+
+### `--mtp-q4` (opt-in): works, no demonstrated gain — left off
+
+0.1.60 (and 0.1.47 before it) supports `--mtp-q4 all|proj|head`, which keeps the draft layer's
+projections and/or draft head as Q4_0 copies "fewer bytes per draft step". It does what it says:
+
+```
+strata mtp: --mtp-q4: draft head over 40525 tokens as Q4_0 (55.7 MiB read per step, was 81.2)
+strata mtp: --mtp-q4: 10 projections as Q4_0 (37.3 MiB)
+strata mtp: draft layer loaded, 915 MiB of VRAM (experts 675, dense 111)
+```
+
+But it did **not** produce a measurable decode gain. Draft acceptance on matched runs stayed
+inside the baseline's own spread: baseline sessions on the same synthetic workload ranged
+**66.7% – 87.9%**, and the `--mtp-q4 all` session measured **75.0%**. One session of 14 windows
+is not enough to resolve a few percent on this box, and the change is opt-in and off by
+default, so it is left off. Test configs are regenerable with
+`F:\STRATA\bench\make_mtp_configs.py`.
+
+### Measurement trap: the resident pool, not the flag
+
+The engine's resident RAM pool is sized from MemAvailable at start and swung **7.98 – 16.25 GiB**
+across otherwise identical restarts, which moves decode speed by roughly ±30%. That is larger
+than any effect measured here, so **comparing two arms across different pools is invalid** — an
+early pass of this work reported a "10-point acceptance drop" for `--mtp-q4` that turned out to
+be an artifact of comparing one synthetic session against older real-traffic sessions. Always
+record the pool from `resident RAM mode: ... GiB of experts in RAM` and only compare runs whose
+pools match; `F:\STRATA\bench\mtp_stats.py` prints per-session acceptance, pool and decode from
+the log so the comparison is visible rather than assumed.
+
+### Answers are not byte-stable on this box — do not read that as a regression
+
+The same prompt twice on the **same** engine gives different text (the adaptive expert tier
+moves experts between VRAM and RAM, so decode is not run-to-run deterministic here). Measured:
+two identical greedy requests on 0.1.45 differed on 2 of 3 prompts. So a text difference
+between two engines says nothing about the update; upstream's own bitwise identity gate
+covers that.
+
+### Long prompts (30K+) — real agent traffic
+
+Realistic baselines from earlier sessions in `strata-coder-iq1_m.log`. These rows are the ones
+a long coding session actually produces, as opposed to the synthetic curve above:
+
+- 58–66K-token prompt: **854–893 tok/s** cold prefill (0 reused), measured on 0.1.43.
+- 13–59K context, agent turn: **28–41 tok/s** decode, 512–12442 tokens per reply, on 0.1.43.
 - Repeat turns on a cached conversation: prompt reuse is near-total (e.g. 68921 of 69487 tokens),
   so the incremental prefill per turn stays small.
 
-Re-measure these on 0.1.43 after a long coding session has run through it. The short-prompt table
-above is the only thing measured directly on the new engine so far.
+Not yet re-measured on 0.1.60 with a long agent session through it. Given the pool sensitivity
+above, do that with the pool recorded.
+
+### Engine defaults worth knowing (0.1.45 → 0.2.14)
+
+- `--lookup-max-t 12` (0.2.14, on by default in the serve engine on one GPU with no batch, no
+  DFlash2 and no layer split): prompt-lookup windows up to 12 tokens, alongside the MTP's
+  `--spec 4`. **The measured +25% on agent rewrites above; `--lookup-max-t 0` turns it off.**
+  The start-up line is `--lookup-max-t 12: MTP windows up to 4 tokens, window sizes 1,2,3,4,5,6,12`.
+- `STRATA_SM86_PERF` (0.2.0+, on by default on sm_86): the nine-switch decode table above.
+  `=0` turns it off. **This is the reason to take the 0.2.x line on this card.**
+- `STRATA_ROUTE_PRIOR` (present since at least 0.1.47 with a default of **0**; 0.2.7 turned it on
+  at 1.5 on a card ≤13 GiB and **0.2.8 took that back**): the router prefers experts already on
+  the card. Measured here as **no effect**, and upstream pulled it back for agent quality. This
+  config pins it to `0` in `env` so a future default cannot re-enable it. `STRATA_DEFAULTS=026`
+  reverts every 0.2.7 Qwen default at once.
+- `STRATA_RESIDENT_HEADROOM_GIB` (present by 0.1.47 too, so it can pin the pool for either
+  engine): GiB of available RAM left free at start (default 4). This is what makes the pool
+  deterministic — `pool = available − headroom − 0.25`. Use it for any A/B; without it the pool
+  wanders and the comparison is meaningless.
+- `STRATA_SSD_KEEPALIVE=1` (0.1.45, on by default): pings the SSD every 100 ms for 60 s after a
+  request so it never spins down mid-stream — the right call for expert streaming. `=0` reverts.
+- `STRATA_ROUTE_TAIL_SKIP=7` (default since 0.1.43): +10–20% decode on 12–16 GB cards
+  that miss experts; answers differ slightly from 0.1.41. `=0` for strict parity.
+- `STRATA_DF_QB_Q4=1` (on by default since 0.1.45): a q4_0 KV cache takes the batched verify
+  window — a 6-token graph of 1950 nodes instead of 2610, identical token ids.
+- CPU prefill share is still correctly declined on this box (14.0 GiB of file pages vs 4.4 GiB
+  RAM free). Do not force it with `=auto`.
 
 ## Data location: moved off the HDD (done)
 
-`Strata-data` was on **E:, a mechanical HDD**, which capped decode at ~3–5 tok/s — the expert-streaming design assumes SSD speeds. It now lives on the **F: NVMe** (`F:\STRATA\Strata-data`), and decode sits at ~38–43 tok/s (see the speed table above). The move was the single largest speed gain available on this PC. The old path was `E:\Code projects\STRATA\Strata-data`.
+`Strata-data` was on **E:, a mechanical HDD**, which capped decode at ~3–5 tok/s — the expert-streaming design assumes SSD speeds. It now lives on the **F: NVMe** (`F:\STRATA\Strata-data`). The move was the single largest speed gain available on this PC. The old path was `E:\Code projects\STRATA\Strata-data`. Decode now sits wherever the resident pool puts it (see the speed table above), which is why every number in this file names its pool.
 
 ## Considered and skipped (on 32 GB RAM)
 
@@ -110,7 +433,9 @@ After setup finishes, apply these edits to `strata-coder-iq1_m.json`:
 - `--kv` → `q4_0`
 - `--vram-reserve-mib` → `999` and `--prefill` → `4096` (large-prompt stability, see above)
 - top-level `"draft_vocab": "en"` and `"reasoning_budget_tokens": 512`
-- top-level `"env": {"STRATA_WATCHDOG_S": "0"}` (no auto-shutdown; see trade-off above)
+- top-level `"env": {"STRATA_WATCHDOG_S": "0", "STRATA_ROUTE_PRIOR": "0"}` (no auto-shutdown, and
+  the route prior pinned off — see the 0.2.7 and 0.2.14 sections; it is inert on this box and
+  upstream pulled its default back for agent use)
 
 And add to the run script: `--host 0.0.0.0 --port 4444 --api-key <random-48-chars>`.
 
