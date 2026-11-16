@@ -185,10 +185,16 @@ therefore resident in RAM regardless, so biasing toward the card's own copy has 
 to move. Upstream's +15–37% was measured on IQ3_XXS; this install runs IQ1_M with a hand-tuned
 `--pcie-frac`/`--spec-min-p` and a large RAM pool.
 
+**Upstream reached the same conclusion from the quality side, and reverted it.** DETAILS.md at
+0.2.14 records: *"0.2.7 turned 1.5 on by itself on those cards and **0.2.8 took that back** (owner
+decision of 2026-10-29) … it can repeat itself and give weaker results in long agent sessions
+(#4402; 4.5 of 10 agent tasks passed against 5.6 with it off). Recommended for a 12 GB card used
+mostly for chat and short answers, **not for long agent runs**."* My measurement says it buys
+nothing here; upstream says it costs agent quality. Both point the same way — **turn it off**,
+neither default is worth keeping on a card driven by agents.
+
 **Verdict: keep 0.2.7 for its fixes, not for its speed.** Nothing regressed (same flags, answers
-correct, health green) and the bug fixes are real — see `QUICK_UPDATE.md`. If you want the more
-deterministic expert selection back, `STRATA_ROUTE_PRIOR=0` in the config's `env` block costs
-nothing measurable here.
+correct, health green) and the bug fixes are real — see `QUICK_UPDATE.md`.
 
 ### New in 0.2.7: the Windows commit-limit warning (worth acting on)
 
