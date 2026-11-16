@@ -23,6 +23,8 @@ cd /d "F:\STRATA\Strata"
 | `--prompt-cache-every`    | `4096`                       | checkpoint growing prompts every 4K tokens instead of 16K — agent clients (Claude Code) resend the whole conversation each turn, so this is what makes multi-turn work fast                 |
 | `fit_max_tokens`          | `true`                       | server clamps `max_tokens` to the context room instead of returning 400 — agent clients that overshoot get a shorter answer, not an error                                                   |
 | `--resident-experts`      | on                           | experts the GPU can't hold live in RAM, copied once at start                                                                                                                                |
+| `--lookup-max-t`          | `12` (engine default, not set in the config) | prompt-lookup windows propose long token runs from the prompt instead of drafting them: **+25% decode on agent file rewrites** (measured, pool-matched). `--lookup-max-t 0` turns it off |
+| `env`                     | `STRATA_WATCHDOG_S=0`, `STRATA_ROUTE_PRIOR=0` | watchdog off (no auto-shutdown); route prior pinned off — inert on this box, and upstream pulled its default back for agent use in 0.2.8. `STRATA_RESIDENT_HEADROOM_GIB` goes here too when an A/B needs a pinned pool |
 | `--host` / `--port`       | `0.0.0.0` / `4444`           | reachable from tailnet/LAN                                                                                                                                                                  |
 | `--api-key`               | see run bat                  | required — `/v1/*` returns 401 without it                                                                                                                                                   |
 
@@ -64,10 +66,23 @@ Read the pool next to the number or the number means nothing:
 | 12.7K-token prompt prefill        | **854 tok/s** (cold, 0.1.45) | ~15 GiB       |
 | Repeat turn, cached conversation  | 12763 of 12781 tokens reused | —             |
 
-**0.1.52 is not measurably faster than 0.1.47 on this box.** The interleaved 0.1.45-vs-0.1.47
-rounds below put 0.1.47 ahead by 7–12%, and 0.1.52's own warm runs landed in the same band at a
-comparable pool. 0.2.7's addition (residency-biased routing) changed nothing here — it is on by
-default on this card and its routing counters did not move; see the 0.2.7 section below.
+**0.1.47 → 0.1.52: not demonstrated, and not really demonstrable on this box.** The two engines
+were finally measured at a matched resident pool (~11 GiB): 0.1.47 **32.7 / 29.6** tok/s decode at
+1.7K / 13K, 0.1.52 **30.1 / 27.8**. So 0.1.52 is *not* faster, and if anything ~6–8% slower — but
+that is a single round and this box swings 20–40% within a round. Earlier comparisons of these two
+were made at *different* pools (0.1.47 at 14–16 GiB against 0.1.52 at 10–13.5 GiB) and prove
+nothing in either direction. What *is* established:
+
+- The one new default in the 0.2.7 line that touches decode speed is **residency-biased routing**,
+  and it is not new code: it is already in 0.1.47, where `src/core/verify.cpp` reads
+  `STRATA_ROUTE_PRIOR` and defaults it to **0.0** (off). 0.2.7 only turned the default on at 1.5,
+  and 0.2.8 took that back. A matched-pool ON-vs-OFF test shows it is **inert here**.
+- The remaining engine-level changes are small; upstream's own Ampere measurement (two RTX A4000)
+  is **+2.2% story / +0.5% code**, inside this box's noise.
+
+So the 0.2.x line has been worth taking for its **fixes and its new mechanisms** — the
+prompt-lookup windows of 0.2.14 are the one that measured large on this box — never for the engine
+simply being faster. See the 0.2.14 section for the win and the 0.2.7 section for the route prior.
 
 ### Measured A/B: engine 0.1.45 vs 0.1.47 on this box
 
@@ -125,11 +140,11 @@ Counted over every session in `strata-coder-iq1_m.log`:
 | 0.1.45 | 275      | 22 (8%)           |
 | 0.1.47 | 193      | 15 (7.8%)         |
 
-**0.1.45 introduced this, not 0.1.47** — 0.1.43 never logged it, and 0.1.45 and 0.1.47 are
-the same rate. **0.1.52 neither fixes nor worsens it:** 11 warnings over 6 sessions (1.8 per
-session), against 2.0 per session for both 0.1.45 and 0.1.47. The reserve of 999 MiB was
-calibrated against 0.1.43, where the engine's own cache sizing left more VRAM over. Upstream
-now recommends **1664** for a card like this.
+**0.1.45 introduced this, not 0.1.47** — 0.1.43 never logged it, and 0.1.45 and 0.1.47 are the
+same rate. It has drifted slowly down since, and **nothing in the 0.2.x line fixes or worsens it**:
+counted per session across every engine in the log, 0.1.45 2.0, 0.1.47 1.9, 0.1.52 1.5,
+0.1.60 1.3. The reserve of 999 MiB was calibrated against 0.1.43, where the engine's own cache
+sizing left more VRAM over. Upstream now recommends **1664** for a card like this.
 
 The trade-off is real: a bigger reserve means fewer expert slots in the GPU cache (the
 reserve is subtracted before the cache is sized), so it costs some decode speed and buys
@@ -302,7 +317,7 @@ q2_0, in the same format — no speed to gain.
 
 ### `--mtp-q4` (opt-in): works, no demonstrated gain — left off
 
-0.1.52 (and 0.1.47 before it) supports `--mtp-q4 all|proj|head`, which keeps the draft layer's
+0.1.60 (and 0.1.47 before it) supports `--mtp-q4 all|proj|head`, which keeps the draft layer's
 projections and/or draft head as Q4_0 copies "fewer bytes per draft step". It does what it says:
 
 ```
@@ -378,7 +393,7 @@ above, do that with the pool recorded.
 
 ## Data location: moved off the HDD (done)
 
-`Strata-data` was on **E:, a mechanical HDD**, which capped decode at ~3–5 tok/s — the expert-streaming design assumes SSD speeds. It now lives on the **F: NVMe** (`F:\STRATA\Strata-data`), and decode sits at ~38–43 tok/s (see the speed table above). The move was the single largest speed gain available on this PC. The old path was `E:\Code projects\STRATA\Strata-data`.
+`Strata-data` was on **E:, a mechanical HDD**, which capped decode at ~3–5 tok/s — the expert-streaming design assumes SSD speeds. It now lives on the **F: NVMe** (`F:\STRATA\Strata-data`). The move was the single largest speed gain available on this PC. The old path was `E:\Code projects\STRATA\Strata-data`. Decode now sits wherever the resident pool puts it (see the speed table above), which is why every number in this file names its pool.
 
 ## Considered and skipped (on 32 GB RAM)
 
@@ -418,7 +433,9 @@ After setup finishes, apply these edits to `strata-coder-iq1_m.json`:
 - `--kv` → `q4_0`
 - `--vram-reserve-mib` → `999` and `--prefill` → `4096` (large-prompt stability, see above)
 - top-level `"draft_vocab": "en"` and `"reasoning_budget_tokens": 512`
-- top-level `"env": {"STRATA_WATCHDOG_S": "0"}` (no auto-shutdown; see trade-off above)
+- top-level `"env": {"STRATA_WATCHDOG_S": "0", "STRATA_ROUTE_PRIOR": "0"}` (no auto-shutdown, and
+  the route prior pinned off — see the 0.2.7 and 0.2.14 sections; it is inert on this box and
+  upstream pulled its default back for agent use)
 
 And add to the run script: `--host 0.0.0.0 --port 4444 --api-key <random-48-chars>`.
 
